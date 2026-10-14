@@ -1,11 +1,15 @@
-
+```python
 import os
-os.environ.setdefault("TF_NUM_INTRAOP_THREADS", "2")
-os.environ.setdefault("TF_NUM_INTEROP_THREADS", "2")
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 
+os.environ["TF_NUM_INTRAOP_THREADS"] = "2"
+os.environ["TF_NUM_INTEROP_THREADS"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+os.environ["MPLBACKEND"] = "Agg"
+
+import gc
 import numpy as np
 import tensorflow as tf
+
 tf.config.set_visible_devices([], "GPU")
 
 import gradio as gr
@@ -14,15 +18,21 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from PIL import Image
 
+
+# Model path
 MODEL_PATH = os.path.join(
     os.path.dirname(__file__),
     "MODELS",
     "kidney_xai_model_v2.keras"
 )
 
-
 CLASS_NAMES = ["Normal", "Tumor"]
-model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+
+# Load the trained model once
+model = tf.keras.models.load_model(
+    MODEL_PATH,
+    compile=False
+)
 
 augmentation = model.get_layer("data_augmentation")
 backbone = model.get_layer("efficientnetb0")
@@ -30,88 +40,162 @@ pooling = model.get_layer("global_average_pooling2d")
 dropout = model.get_layer("dropout")
 classifier = model.get_layer("dense")
 
+
 def predict_kidney(image):
     if image is None:
         raise gr.Error("Please upload an image first.")
 
-    image = image.convert("RGB").resize((224, 224))
-    print("DEBUG: Image received; starting prediction", flush=True)
-    original = np.asarray(image)
-    x = tf.convert_to_tensor(
-        original.astype(np.float32)[None, ...]
-    )
+    fig = None
 
-    # Exact same layer sequence as the saved classifier.
-    with tf.GradientTape() as tape:
+    try:
+        print("DEBUG: Image received", flush=True)
+
+        # Resize input to the model's expected dimensions
+        image = image.convert("RGB").resize((224, 224))
+        original = np.asarray(image, dtype=np.uint8)
+
+        x = tf.convert_to_tensor(
+            original[None, ...],
+            dtype=tf.float32
+        )
+
+        # Compute feature maps without retaining gradients
         augmented = augmentation(x, training=False)
         feature_maps = backbone(augmented, training=False)
+
         print("DEBUG: Backbone finished", flush=True)
-        tape.watch(feature_maps)
 
-        pooled = pooling(feature_maps)
-        dropped = dropout(pooled, training=False)
-        predictions = classifier(dropped)
+        # Grad-CAM: calculate gradients for the predicted class
+        with tf.GradientTape() as tape:
+            tape.watch(feature_maps)
 
-        class_index = tf.argmax(predictions[0])
-        score = predictions[:, class_index]
+            pooled = pooling(feature_maps)
+            dropped = dropout(pooled, training=False)
+            predictions = classifier(dropped)
 
-    gradients = tape.gradient(score, feature_maps)
-    if gradients is None:
-        raise gr.Error("Grad-CAM gradients could not be calculated.")
+            class_index = tf.argmax(
+                predictions[0],
+                output_type=tf.int32
+            )
+            score = predictions[:, class_index]
 
-    weights = tf.reduce_mean(
-        gradients, axis=(1, 2), keepdims=True
-    )
-    heatmap = tf.reduce_sum(
-        weights * feature_maps, axis=-1
-    )[0]
-    heatmap = tf.maximum(heatmap, 0)
-    heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-8)
-    heatmap = heatmap.numpy()
+        gradients = tape.gradient(score, feature_maps)
 
-    probabilities = predictions.numpy()[0]
-    results = {
-        CLASS_NAMES[i]: float(probabilities[i])
-        for i in range(len(CLASS_NAMES))
-    }
-    predicted_class = CLASS_NAMES[int(np.argmax(probabilities))]
+        if gradients is None:
+            raise gr.Error(
+                "Grad-CAM gradients could not be calculated."
+            )
 
-    heatmap_image = Image.fromarray(
-        np.uint8(heatmap * 255)
-    ).resize((224, 224))
-    colored = plt.get_cmap("jet")(
-        np.asarray(heatmap_image) / 255.0
-    )[..., :3]
+        # Calculate Grad-CAM heatmap
+        weights = tf.reduce_mean(
+            gradients, axis=(1, 2), keepdims=True
+        )
 
-    overlay = (
-        0.55 * original / 255.0 + 0.45 * colored
-    )
-    overlay = np.uint8(np.clip(overlay, 0, 1) * 255)
+        heatmap = tf.reduce_sum(
+            weights * feature_maps, axis=-1
+        )[0]
 
-    fig, axes = plt.subplots(1, 2, figsize=(9, 4))
-    axes[0].imshow(original)
-    axes[0].set_title("Uploaded image")
-    axes[0].axis("off")
-    axes[1].imshow(overlay)
-    axes[1].set_title("Grad-CAM overlay")
-    axes[1].axis("off")
-    fig.tight_layout()
+        heatmap = tf.maximum(heatmap, 0)
+        heatmap = heatmap / (
+            tf.reduce_max(heatmap) + 1e-8
+        )
+        heatmap = heatmap.numpy()
 
-    message = (
-        f"Model prediction: {predicted_class}. "
-        "Research prototype only; not a medical diagnosis. "
-        "Grad-CAM highlights influential regions and does not "
-        "confirm tumor boundaries."
-    )
-    return results, fig, message
+        # Class probabilities
+        probabilities = predictions.numpy()[0]
+
+        results = {
+            CLASS_NAMES[i]: float(probabilities[i])
+            for i in range(len(CLASS_NAMES))
+        }
+
+        predicted_class = CLASS_NAMES[
+            int(np.argmax(probabilities))
+        ]
+
+        # Create heatmap overlay
+        heatmap_image = Image.fromarray(
+            np.uint8(heatmap * 255)
+        ).resize((224, 224))
+
+        colored = plt.get_cmap("jet")(
+            np.asarray(heatmap_image, dtype=np.float32) / 255.0
+        )[..., :3]
+
+        overlay = (
+            0.55 * original.astype(np.float32) / 255.0
+            + 0.45 * colored
+        )
+
+        overlay = np.uint8(
+            np.clip(overlay, 0, 1) * 255
+        )
+
+        # Display original image and Grad-CAM
+        fig, axes = plt.subplots(
+            1, 2, figsize=(8, 4)
+        )
+
+        axes[0].imshow(original)
+        axes[0].set_title("Uploaded image")
+        axes[0].axis("off")
+
+        axes[1].imshow(overlay)
+        axes[1].set_title("Grad-CAM overlay")
+        axes[1].axis("off")
+
+        fig.tight_layout()
+
+        message = (
+            f"Model prediction: {predicted_class}. "
+            "Research prototype only; not a medical diagnosis. "
+            "Grad-CAM highlights influential regions and does not "
+            "confirm tumor boundaries."
+        )
+
+        print("DEBUG: Prediction completed", flush=True)
+
+        return results, fig, message
+
+    except gr.Error:
+        if fig is not None:
+            plt.close(fig)
+        raise
+
+    except Exception as error:
+        if fig is not None:
+            plt.close(fig)
+
+        print(
+            f"Prediction error: {error}",
+            flush=True
+        )
+
+        raise gr.Error(
+            "Prediction failed. Check the Render logs for details."
+        ) from error
+
+    finally:
+        gc.collect()
+
 
 demo = gr.Interface(
     fn=predict_kidney,
-    inputs=gr.Image(type="pil", label="Upload kidney CT image"),
+    inputs=gr.Image(
+        type="pil",
+        label="Upload kidney CT image"
+    ),
     outputs=[
-        gr.Label(num_top_classes=2, label="Class probabilities"),
-        gr.Plot(label="Explainability — Grad-CAM"),
-        gr.Textbox(label="Interpretation and limitation")
+        gr.Label(
+            num_top_classes=2,
+            label="Class probabilities"
+        ),
+        gr.Plot(
+            label="Explainability — Grad-CAM"
+        ),
+        gr.Textbox(
+            label="Interpretation and limitation"
+        )
     ],
     title="Kidney XAI — Image Classification",
     description=(
@@ -122,9 +206,12 @@ demo = gr.Interface(
 
 
 if __name__ == "__main__":
-    demo.queue(default_concurrency_limit=1).launch(
+    demo.queue(
+        default_concurrency_limit=1
+    ).launch(
         server_name="0.0.0.0",
         server_port=int(os.environ.get("PORT", "7860")),
         share=False,
         show_error=True
     )
+```
