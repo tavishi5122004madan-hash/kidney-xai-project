@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.git/
+.venv/
+venv/
+mlruns/
+.gradio/
+DATASET/
+OUTPUTS/
+mlflow.db
+*.log
