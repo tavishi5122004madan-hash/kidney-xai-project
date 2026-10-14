@@ -2,12 +2,12 @@
 import os
 os.environ.setdefault("TF_NUM_INTRAOP_THREADS", "2")
 os.environ.setdefault("TF_NUM_INTEROP_THREADS", "2")
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 
 import numpy as np
 import tensorflow as tf
+tf.config.set_visible_devices([], "GPU")
 
-import numpy as np
-import tensorflow as tf
 import gradio as gr
 import matplotlib
 matplotlib.use("Agg")
@@ -19,6 +19,7 @@ MODEL_PATH = os.path.join(
     "MODELS",
     "kidney_xai_model_v2.keras"
 )
+
 
 CLASS_NAMES = ["Normal", "Tumor"]
 model = tf.keras.models.load_model(MODEL_PATH, compile=False)
