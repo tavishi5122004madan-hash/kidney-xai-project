@@ -1,4 +1,4 @@
-```python
+
 import os
 
 os.environ["TF_NUM_INTRAOP_THREADS"] = "2"
