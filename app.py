@@ -35,6 +35,7 @@ def predict_kidney(image):
         raise gr.Error("Please upload an image first.")
 
     image = image.convert("RGB").resize((224, 224))
+    print("DEBUG: Image received; starting prediction", flush=True)
     original = np.asarray(image)
     x = tf.convert_to_tensor(
         original.astype(np.float32)[None, ...]
@@ -44,6 +45,7 @@ def predict_kidney(image):
     with tf.GradientTape() as tape:
         augmented = augmentation(x, training=False)
         feature_maps = backbone(augmented, training=False)
+        print("DEBUG: Backbone finished", flush=True)
         tape.watch(feature_maps)
 
         pooled = pooling(feature_maps)
