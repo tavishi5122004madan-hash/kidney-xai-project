@@ -1,5 +1,11 @@
 
 import os
+os.environ.setdefault("TF_NUM_INTRAOP_THREADS", "2")
+os.environ.setdefault("TF_NUM_INTEROP_THREADS", "2")
+
+import numpy as np
+import tensorflow as tf
+
 import numpy as np
 import tensorflow as tf
 import gradio as gr
